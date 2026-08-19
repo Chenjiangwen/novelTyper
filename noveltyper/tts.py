@@ -35,6 +35,7 @@ CACHE = Path.home() / ".local/share/noveltyper/tts"
 CACHE_MAX = 400                  # 缓存文件数上限，按 mtime 淘汰
 DEFAULT_ORDER = ("edge", "say", "http")
 TIMEOUT = 20
+ERR_MAX = 110                    # 错误摘要长度上限：一行放得下，不能铺满屏
 
 # 播放器按可用性取第一个。`{f}` 是音频路径占位。
 PLAYERS = (
@@ -176,6 +177,24 @@ def _http(text, cfg, out):
 BACKENDS = {"edge": _edge, "say": _say, "http": _http}
 
 
+def err_summary(e):
+    """异常 → 一行短摘要。**绝不能把后端的原始命令行放进去。**
+
+    `edge` 后端是当 CLI 调的，而 `subprocess.TimeoutExpired.__str__` 会把完整 argv 塞进
+    消息里 —— 其中 `--text` 的值就是**整段小说正文**。一次超时就能在屏幕上打出四百字英文
+    小说，伪装当场崩掉；这和「progress.json 不存明文正文」是同一条理由。所以对带 `cmd`
+    的子进程异常只取超时秒数，绝不碰 `str(e)`。
+
+    其余异常（网络、HTTP 状态码）的 str 里没有正文，照原样取，但仍要截断 —— 错误跟在
+    `[tts] ...` 后面同一行，铺满屏幕本身就是穿帮面。
+    """
+    if isinstance(e, subprocess.TimeoutExpired):
+        return f"timed out after {e.timeout:.0f}s"
+    if isinstance(e, subprocess.CalledProcessError):
+        return f"exited {e.returncode}"
+    return re.sub(r"\s+", " ", str(e))[:ERR_MAX]
+
+
 def available():
     """按 DEFAULT_ORDER 可用的后端名。http 只在配了 url 时算可用。"""
     cfg = config()
@@ -224,6 +243,26 @@ class Engine:
         self._proc = None
         self._pending = {}            # 预取：cache key → 线程
 
+    # ---- 错误状态 ------------------------------------------------------
+    # `err` 是**当前状态**而不是日志，两条规则：
+    #   - 一次成功的合成就把它清掉。不清的话按 `v` 会一直打十分钟前那次超时，看起来像
+    #     "刚刚又失败了"，而声音其实是好的 —— 把人往错的方向引。
+    #   - 读走即清（`take_err`）。同一次失败只报一次；否则连按两下 `v`（关再开）就会把
+    #     同一条错误打两遍，屏幕上像出了两次问题。
+    def _ok(self):
+        with self._lock:
+            self.err = ""
+
+    def _fail(self, msg):
+        with self._lock:
+            self.err = msg
+
+    def take_err(self):
+        """取出并清空当前错误 —— 报一次就算报过了。"""
+        with self._lock:
+            e, self.err = self.err, ""
+        return e
+
     # ---- 缓存 ----------------------------------------------------------
     def _key(self, text):
         cfg = self._bcfg()
@@ -244,22 +283,29 @@ class Engine:
         key = self._key(text)
         hit = self._cached(key)
         if hit:
+            self._ok()
             return hit
         CACHE.mkdir(parents=True, exist_ok=True)
         fn = BACKENDS.get(self.backend)
         if not fn:
+            self._fail("no backend (install edge-tts, or configure http)")
             return None
         tmp = Path(tempfile.mkdtemp(dir=CACHE, prefix=".synth-"))
         try:
             got = fn(text, self._bcfg(), tmp / "a.mp3")
             if not got:
+                # 后端不抛、只返回 None（edge-tts 退非零、say 写了 0 字节、endpoint 返回
+                # 空体）。这条分支不留话的话，那次「按 v 有 `[tts] edge` 但没声音」就完全
+                # 无从下手 —— `--rate=-10%` 那个 bug 当初就是这个形态。
+                self._fail(f"{self.backend} produced no audio")
                 return None
             dst = CACHE / (key + got.suffix)
             os.replace(got, dst)      # 原子落盘：半个文件被播放器读到就是杂音
             _trim_cache()
+            self._ok()
             return dst
         except Exception as e:        # noqa: BLE001 - 网络/子进程失败形态太多
-            self.err = f"{type(e).__name__}: {e}"
+            self._fail(err_summary(e))
             return None
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
@@ -277,7 +323,7 @@ class Engine:
     def _play(self, path, gen):
         cmd = _player()
         if not cmd:
-            self.err = "no audio player (afplay/ffplay/mpv/aplay)"
+            self._fail("no audio player (afplay/ffplay/mpv/aplay)")
             return
         argv = [a.replace("{f}", str(path)) for a in cmd]
         with self._lock:
@@ -287,7 +333,7 @@ class Engine:
                 self._proc = subprocess.Popen(argv, stdout=subprocess.DEVNULL,
                                               stderr=subprocess.DEVNULL)
             except OSError as e:
-                self.err = str(e)
+                self.err = err_summary(e)   # 直接赋值：锁已在手上，`_fail` 会自死锁
                 return
             proc = self._proc
         with contextlib.suppress(OSError):

@@ -4,6 +4,9 @@
   - **推进键要多**（Enter/n/空格/j）—— 读得顺的时候手不该去找特定键。
   - **危险键要少且不与推进键相邻** —— `q` 退出、Esc 老板键、Ctrl-L 恢复。
 
+**同一个动作在两个模式里要同一个键。** Tab 在阅读模式和打字模式都是「重听」
+（`typemode.REPLAY`，两边引用同一个常量），否则 `t` 进出一次就得换一套手势。
+
 未识别的可打印键回一句 `zsh: command not found:` —— 误按也留在伪装里，不会出现
 "未知按键"这类只有阅读器才会说的话。
 """
@@ -123,8 +126,17 @@ def main(argv=None):
                     voice.stop()              # 关掉时当前这句也要停，不能读完
                     if voice.enabled:
                         voice.speak(ctx(cols).text)
+                    # `take_err` 读走即清 —— 否则连按两下 v（关再开）会把同一条错误打两遍，
+                    # 而且十分钟前那次超时会一直跟在后面，看着像"刚刚又坏了"。
+                    err = voice.take_err()
                     print(f"{DIM}[tts] {voice.label()}"
-                          + (f" · {voice.err}" if voice.err else "") + OFF)
+                          + (f" · {err}" if err else "") + OFF)
+                elif k == typemode.REPLAY:
+                    # Tab 重听本段。和打字模式同一个键、同一个常量 —— 两个模式里手势不一样
+                    # 的话，切进切出时就得记两套。不重渲染：屏幕上那段还在，重印一遍会让
+                    # 会话里出现两份相同的"构建输出"，比没声音更可疑。
+                    if voice.enabled:
+                        voice.speak(ctx(cols).text)   # speak 内部先 stop，等于从头再念
                 elif k == "c":
                     voice.stop()              # 目录页占屏，读着上一段就错位了
                     toc.show(theme, bk, units[i][0], cols, ps1)

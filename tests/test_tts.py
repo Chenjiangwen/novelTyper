@@ -172,6 +172,87 @@ def test_backend_failure_is_recorded_not_raised(monkeypatch):
     assert "network unreachable" in e.err
 
 
+def test_err_summary_never_leaks_the_novel_text(isolate, monkeypatch):
+    """**超时摘要里绝不能出现正文。**
+
+    `edge` 后端是当 CLI 调的，`--text` 的值就是整段小说。而
+    `subprocess.TimeoutExpired.__str__` 会把完整 argv 拼进消息里 —— 直接 `str(e)` 的话
+    一次超时就在屏幕上打出四百字英文小说，伪装当场崩掉（用户实测撞到过）。同「progress.json
+    不存明文正文」是一条理由。
+    """
+    # 占位文字，不是书里的段落 —— 这条测试自己会跟着公开仓库走，用真正文就自相矛盾了。
+    novel = ("The lamp on the far bank went out a little before dawn, and for a while "
+             "there was nothing to look at but the water.")
+    exc = subprocess.TimeoutExpired(
+        ["/usr/bin/edge-tts", "--voice", "en-US-AndrewNeural", "--text", novel],
+        tts.TIMEOUT)
+    msg = tts.err_summary(exc)
+    assert "far bank" not in msg and novel[:20] not in msg
+    assert "edge-tts" not in msg and "--text" not in msg
+    assert msg == "timed out after 20s"
+
+    # 走完整条 `_synth` 路径再验一次 —— 摘要函数对了但调用点写成 str(e) 就白搭。
+    def slow(text, cfg, out):
+        raise subprocess.TimeoutExpired(["edge-tts", "--text", text], tts.TIMEOUT)
+    monkeypatch.setitem(tts.BACKENDS, "fake", slow)
+    e = tts.Engine(enabled=True, backend="fake")
+    assert e._synth(novel) is None
+    assert novel[:20] not in e.err and len(e.err) <= tts.ERR_MAX
+
+
+def test_err_is_current_state_not_a_log(monkeypatch):
+    """**一次成功的合成要把 `err` 清掉。**
+
+    用户实测：一段超时之后，每次按 `v` 都跟着打十分钟前那条超时 —— 看着像"刚刚又失败了"，
+    而声音其实早就好了。`err` 是当前状态，不是历史。
+    """
+    state = {"ok": False}
+
+    def flaky(text, cfg, out):
+        if not state["ok"]:
+            raise OSError("boom")
+        dst = out.with_suffix(".mp3")
+        dst.write_bytes(b"ID3")
+        return dst
+
+    monkeypatch.setitem(tts.BACKENDS, "fake", flaky)
+    e = tts.Engine(enabled=True, backend="fake")
+    assert e._synth("first") is None and e.err
+    state["ok"] = True
+    assert e._synth("second") is not None
+    assert e.err == ""                      # 成功之后不许还挂着上次的错
+
+
+def test_take_err_reports_once(monkeypatch):
+    """**读走即清。** 否则连按两下 `v`（关再开）会把同一条错误打两遍，屏幕上像坏了两次。"""
+    def boom(text, cfg, out):
+        raise OSError("boom")
+    monkeypatch.setitem(tts.BACKENDS, "fake", boom)
+    e = tts.Engine(enabled=True, backend="fake")
+    e._synth("x")
+    assert e.take_err() == "boom"
+    assert e.take_err() == ""               # 第二次没话说了
+
+
+def test_silent_backend_failure_still_leaves_a_message(monkeypatch):
+    """后端只返回 None（不抛）时也要留话 —— `--rate=-10%` 那个 bug 就是这个形态：
+    有 `[tts] edge` 却没声音，而 `err` 是空的，完全无从下手。"""
+    monkeypatch.setitem(tts.BACKENDS, "fake", fake_backend([], ok=False))
+    e = tts.Engine(enabled=True, backend="fake")
+    assert e._synth("x") is None
+    assert "no audio" in e.err
+
+
+def test_cached_hit_clears_stale_error(monkeypatch):
+    """缓存命中也算成功 —— 翻回一段已合成过的正文，不该还跟着上一段的失败信息。"""
+    monkeypatch.setitem(tts.BACKENDS, "fake", fake_backend([]))
+    e = tts.Engine(enabled=True, backend="fake")
+    assert e._synth("cached line") is not None
+    e._fail("stale")
+    assert e._synth("cached line") is not None      # 这次走缓存
+    assert e.err == ""
+
+
 def test_http_secrets_come_from_env_not_config(monkeypatch, isolate):
     """**密钥只从环境变量取。** 配置文件会被备份、被同步、被误提交 —— 这个项目已经有
     「progress.json 不存明文正文」的同类先例。"""

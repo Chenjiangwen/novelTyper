@@ -4,7 +4,7 @@
 
 [![Python](https://img.shields.io/badge/python-3.9%2B-blue.svg)](https://www.python.org/)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-136%20passed-brightgreen.svg)](#开发)
+[![Tests](https://img.shields.io/badge/tests-142%20passed-brightgreen.svg)](#开发)
 
 novelTyper 把 epub 小说渲染成 `git log -p`、`pytest`、`go test`、`ripgrep` 的输出形态，
 一次按键推进一段正文。它不接管屏幕，而是内联进你当前的终端会话：复用机器上真实的 PS1，
@@ -56,7 +56,7 @@ index 3e9c06e..911c48a 100644
 - **不接管屏幕** —— 内联进当前会话，一次按键出一段，滚回去还能看到你真正的命令历史。
 - **打字练习** —— 任意段落按 `t` 进入，逐字符比对，统计净 wpm 与准确率。
 - **朗读** —— `v` 开关，默认微软 Edge 语音，也可用 macOS 内置 `say` 或自定义 HTTP
-  endpoint；打字模式按行朗读，Ctrl-R 重听。
+  endpoint；`Tab` 重听，打字模式按行朗读。
 - **老板键** —— Esc 单击切到 `tsc --watch --noEmit` 的等待屏，`Ctrl-L` 恢复。
 - **多书书架** —— epub 丢进目录即可，进度按书独立记录。
 - **章节目录** —— 从 `toc.ncx` 解析，按序号跳转。
@@ -128,6 +128,7 @@ corpus-verify ~/x.epub     # 存在的路径直接使用
 | `c` | 章节目录，输入序号 + 回车跳转 |
 | `t` | 对当前段进入打字模式 |
 | `v` | 切换朗读 |
+| `Tab` | 重听（阅读模式重听本段，打字模式重听当前行） |
 | `Esc` | 老板键 |
 | `Ctrl-L` | 从老板键恢复 |
 | `q` / `Ctrl-D` | 退出并存档 |
@@ -165,7 +166,7 @@ Ctrl-C 放弃本段。
 键盘敲不出来的字符自动跳过，不计击键也不计错。
 
 开着朗读时，每进入一行念一次这一行 —— **不是按整段**。整段读完要十几秒，人早打到第三行
-了，声音和光标对不上就成了干扰。`Ctrl-R` 重听当前行，不计击键、不动游标（听不清多按两下
+了，声音和光标对不上就成了干扰。`Tab` 重听当前行，不计击键、不动游标（听不清多按两下
 不该把准确率打下去）。
 
 ### 朗读
@@ -235,6 +236,15 @@ cp tts.example.json tts.json
 音频缓存在 `~/.local/share/noveltyper/tts/`，键含后端与嗓音（改了 `voice`/`rate` 自动
 失效，不用手动清），按 mtime 淘汰到 400 个文件。后端挂了（网络抽一下、endpoint 500）
 不抛异常，静音继续读。
+
+失败信息跟在 `[tts] ...` 那一行后面，且**只是一行短摘要**（`timed out after 20s`）——
+不是异常原文。`edge` 是当 CLI 调的，`subprocess.TimeoutExpired` 的消息里带着完整命令行，
+而 `--text` 的值就是整段正文；直接打出来等于在屏幕上贴一段小说。同「进度存档不写明文正文」
+是一条理由。这一行**读走即清**：一次成功的合成把它抹掉，同一次失败也只报一次 —— 否则按
+`v` 会一直跟着十分钟前那次超时，看着像刚刚又坏了。
+
+`Tab` 重听：阅读模式重听当前段，打字模式重听当前行 —— 两个模式同一个键，`t` 进出时不用
+换手势。重听不重新渲染屏幕（会话里出现两份一样的「构建输出」比没声音更可疑），也不推进。
 
 播放器按 `afplay` / `ffplay` / `mpv` / `paplay` / `aplay` 取第一个可用的。
 
@@ -323,7 +333,7 @@ blockquote / 7 个 p，只取 `<p>` 会整章丢失）；小于 1500 字节的 s
 
 ```bash
 pip install -e .
-python3 -m pytest          # 136 个测试
+python3 -m pytest          # 142 个测试
 ```
 
 `tests/test_app.py` 和 `tests/test_term.py` 在真 pty 里跑，改动前先看模块 docstring ——
@@ -362,7 +372,11 @@ python3 -m pytest          # 136 个测试
 按下后会打出一行选中的后端（`[tts] edge`，关掉时是 `[tts] edge (off)`）。显示 `none`
 说明一个后端都不可用 —— 装 `edge-tts`，或配一个 `http` endpoint。有后端名但仍然没声音，
 通常是没有播放器（Linux 上装 `mpv` 或 `ffmpeg`），或者 endpoint 报错了；合成失败不抛异常，
-只静音继续，错误跟在同一行后面。
+只静音继续，摘要跟在同一行后面（`[tts] edge · timed out after 20s`）。`edge` 后端连的是
+微软的在线服务，网络不通就会超时 —— 想彻底离线换成 `say`。
+
+摘要是**当次**状态：报过一次就清掉，一次成功的合成也会把它抹掉。所以按 `v` 后面干干净净
+说明当前是好的，不代表从没失败过。
 
 **改了 `tts.json` 但没生效？**
 `./tts.json` 是相对当前工作目录的（和 `novel_data/` 一样）—— 从别的目录起就只剩全局那份

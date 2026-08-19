@@ -167,6 +167,7 @@ def test_app_full_keyboard_walk(synth_epub, tmp_path):
         (b"s", 0.4),                  # 换主题
         (b"s", 0.4),
         (b"\x1b[A", 0.3),             # 方向键：必须被吞掉，不能进老板键
+        (b"\t", 0.3),                 # Tab 重听：没开朗读时是彻底的空操作，不能推进
         (b"z", 0.3),                  # 未识别键 → command not found
         (b"c", 0.5), (b"1", 0.3), (b"\r", 0.5),        # 目录 → 跳第 1 章
         (b"t", 0.5), (b"\x1b", 0.5),  # 进打字模式再放弃
@@ -180,6 +181,7 @@ def test_app_full_keyboard_walk(synth_epub, tmp_path):
     assert "Traceback" not in out, out[-3000:]
     assert os.WIFEXITED(status) and os.WEXITSTATUS(status) == 0, out[-2500:]
     assert "command not found: z" in out          # 误按也留在伪装里
+    assert "command not found: \t" not in out     # Tab 有自己的分支，不掉进兜底
     assert "--watch" in out and "Found 0 errors" in out   # 老板键那一屏出现过
     assert "jump to entry" in out                 # 目录跳转走到了
     assert "<<'EOF'" in out                       # 打字模式进过
@@ -278,6 +280,8 @@ def test_app_with_tts_enabled_survives_the_whole_walk(synth_epub, tmp_path):
     """**开着朗读走一遍主循环。** 单元测试覆盖了 Engine，但这些才是只有真跑才验证到的：
 
       - `v` 键的开关行文（`[tts] ...`）确实打出来，而且没有 Traceback；
+      - **Tab 在阅读模式重听**：不重渲染这一段（屏幕上出现两份相同的"构建输出"比没声音
+        更可疑），也不掉进 `command not found` 那条兜底分支；
       - 五处 `voice.stop()` 联动（目录、打字、老板键、关闭、finally）不会卡住主循环 ——
         `stop()` 里持锁 + terminate 子进程，写错了表现是退出时挂死而不是报错；
       - 退出时把 `tts`/`voice` 存进了 progress.json，下次启动才接得上；
@@ -291,6 +295,7 @@ def test_app_with_tts_enabled_survives_the_whole_walk(synth_epub, tmp_path):
         keys = [
             (b"v", 0.6),                  # 开朗读
             (b"n", 0.6), (b"n", 0.6),     # 翻两段：抢占 + 预取都走到
+            (b"\t", 0.6), (b"\t", 0.6),   # Tab 重听两次：不推进、不重渲染
             (b"c", 0.5), (b"\r", 0.4),    # 目录（stop 联动），回车不跳转
             (b"t", 0.6), (b"\x1b", 0.5),  # 打字模式（按行朗读）再放弃
             (b"\x1b", 0.5), (b"\x0c", 0.5),   # 老板键 → 必须静音 → Ctrl-L 回来
@@ -301,8 +306,11 @@ def test_app_with_tts_enabled_survives_the_whole_walk(synth_epub, tmp_path):
     assert "Traceback" not in out, out[-3000:]
     assert os.WIFEXITED(status) and os.WEXITSTATUS(status) == 0, out[-2500:]
     assert "[tts] http" in out                    # 开关行、且选中的是项目内 tts.json 的后端
+    assert "command not found" not in out         # Tab 不能掉进兜底分支
     assert "%)" in out and "min" in out           # finally 走完了，没在 stop 里挂死
 
     rec = json.loads((home / ".local/share/noveltyper/progress.json").read_text())
     key = next(k for k in rec if k != "_v")
     assert rec[key]["tts"] is True and rec[key]["voice"] == "http"
+    # Tab 按了两次却没推进 —— 重听不是翻页。offset 只应反映上面那两次 `n`。
+    assert rec[key]["offset"] > 0

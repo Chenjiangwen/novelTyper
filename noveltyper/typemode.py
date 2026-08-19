@@ -22,7 +22,7 @@ from .themes import DIM, GRN, RED, OFF
 
 ABORT = ("\x03", "\x1b")          # Ctrl-C / Esc 放弃本段
 BACKSPACE = ("\x7f", "\b")
-REPLAY = "\x12"                   # Ctrl-R 重听当前行（听打时最需要的一个键）
+REPLAY = "\t"                     # Tab 重听（阅读模式 `app.py` 用同一个常量）
 
 
 def typeable(ch):
@@ -31,6 +31,9 @@ def typeable(ch):
     上界 126：`read_key` 一次 `os.read` 只取一个字节，非 ASCII 永远匹配不上。
     下界 32：主循环把 `ord < 32` 当控制键忽略（Enter/Tab 不该算击键），所以正文里真出现
     控制字符时同样是死锁。两头都卡住才是完整判据 —— 见模块 docstring。
+
+    Tab（`\\x09`）落在下界外，所以把它当重听键不会和正文里的制表符冲突：真出现制表符时
+    `_skip` 会跳过它，不会停在上面等一个永远不算击键的按键。
     """
     return 32 <= ord(ch) <= 126
 
@@ -57,7 +60,10 @@ def run(read_key, lines, target_path, ps1, say=None):
     """打完 lines 里的每一行。read_key 由调用方注入（term.read_key），便于测试。
 
     `say(text)` 可选，给一行就朗读一行 —— 听打练习。**按行而不是按整段朗读**：整段读完
-    要十几秒，人早打到第三行了，声音和光标对不上就成了干扰而不是提示。Ctrl-R 重听当前行。
+    要十几秒，人早打到第三行了，声音和光标对不上就成了干扰而不是提示。Tab 重听当前行。
+
+    **`REPLAY` 的判定必须排在 `ord(k) < 32` 的控制键过滤之前** —— Tab 本身就是 `\\x09`，
+    顺序反了它会先被当成"忽略的控制键"吃掉，重听就永远不触发。
 
     返回 (wpm, accuracy) 或 None（中途放弃）。计时从第一次有效击键开始 —— 否则「看完
     这段再动手」的思考时间会算进速度里。

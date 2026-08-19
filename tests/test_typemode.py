@@ -116,15 +116,29 @@ def test_say_is_called_once_per_line(capsys):
 
 
 def test_replay_does_not_count_as_keystroke(capsys):
-    """Ctrl-R 重听不算击键、不动游标 —— 否则听不清多按两下就把准确率打下去了。"""
+    """Tab 重听不算击键、不动游标 —— 否则听不清多按两下就把准确率打下去了。"""
     said = []
-    r = typemode.run(feeder(["a", "\x12", "\x12", "b"]), ["ab"], "x.txt", "$ ",
+    r = typemode.run(feeder(["a", "\t", "\t", "b"]), ["ab"], "x.txt", "$ ",
                      say=said.append)
     assert r is not None and r[1] == 100.0      # 两次重听没记成错字
     assert said == ["ab", "ab", "ab"]           # 进入时一次 + 两次重听
 
 
 def test_replay_without_say_is_harmless(capsys):
-    """没开朗读时按 Ctrl-R 不能炸、也不能吃掉后面的输入。"""
-    r = typemode.run(feeder(["\x12", "a", "b"]), ["ab"], "x.txt", "$ ")
+    """没开朗读时按 Tab 不能炸、也不能吃掉后面的输入。"""
+    r = typemode.run(feeder(["\t", "a", "b"]), ["ab"], "x.txt", "$ ")
     assert r is not None and r[1] == 100.0
+
+
+def test_replay_is_checked_before_the_control_key_filter():
+    """**Tab 是 `\\x09`，重听判定必须排在 `ord(k) < 32` 的控制键过滤之前。**
+
+    顺序反了 Tab 会先被当成"忽略的控制键"吃掉 —— 表现成「按 Tab 完全没反应」，而不是
+    报错。这条钉住那个顺序：Tab 必须落到 `say` 上，且仍然不算击键。
+    """
+    assert typemode.REPLAY == "\t"
+    assert not typemode.typeable(typemode.REPLAY)   # 仍在控制键值域内
+    said = []
+    r = typemode.run(feeder(["\t", "a"]), ["a"], "x.txt", "$ ", say=said.append)
+    assert r is not None and r[1] == 100.0
+    assert said == ["a", "a"]                       # 进入一次 + Tab 重听一次
