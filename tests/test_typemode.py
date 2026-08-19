@@ -102,3 +102,29 @@ def test_escape_sequence_ignored(capsys):
     """方向键在打字模式里也不能被当成击键。"""
     r = typemode.run(feeder([None, None, "a", "b"]), ["ab"], "x.txt", "$ ")
     assert r is not None and r[1] == 100.0
+
+
+def test_say_is_called_once_per_line(capsys):
+    """**按行朗读，不是按整段。** 整段读完要十几秒，人早打到第三行了，声音和光标对不上
+    就成了干扰。这条钉住粒度：每行进入时恰好念一次它自己。"""
+    said = []
+    lines = ["first line", "second"]
+    keys = list("first line") + list("second")
+    r = typemode.run(feeder(keys), lines, "x.txt", "$ ", say=said.append)
+    assert r is not None
+    assert said == lines
+
+
+def test_replay_does_not_count_as_keystroke(capsys):
+    """Ctrl-R 重听不算击键、不动游标 —— 否则听不清多按两下就把准确率打下去了。"""
+    said = []
+    r = typemode.run(feeder(["a", "\x12", "\x12", "b"]), ["ab"], "x.txt", "$ ",
+                     say=said.append)
+    assert r is not None and r[1] == 100.0      # 两次重听没记成错字
+    assert said == ["ab", "ab", "ab"]           # 进入时一次 + 两次重听
+
+
+def test_replay_without_say_is_harmless(capsys):
+    """没开朗读时按 Ctrl-R 不能炸、也不能吃掉后面的输入。"""
+    r = typemode.run(feeder(["\x12", "a", "b"]), ["ab"], "x.txt", "$ ")
+    assert r is not None and r[1] == 100.0

@@ -18,7 +18,9 @@ import json
 import os
 import pty
 import signal
+import socket
 import struct
+import subprocess
 import sys
 import termios
 import threading
@@ -42,15 +44,21 @@ main([{book!r}])
 """
 
 
-def run_app(book, keys, home, settle=2.0, deadline=25.0, cols=100):
+def run_app(book, keys, home, settle=2.0, deadline=25.0, cols=100, cwd=None):
     """在 pty 里跑 app.main，注入按键，返回 (输出文本, waitpid status)。"""
+    # **fork 之后到 execve 之间不做任何 Python 层的分配。** 全量跑时 pytest 进程里有别的
+    # 线程（TTS stub server 的等待、朗读的 daemon 线程），fork 一个多线程进程时子进程可能
+    # 拿到别的线程持着的 malloc 锁 → 卡在 fork 与 execve 之间，被 deadline 打死，表现成
+    # 「进度文件没写出来」这种完全不像死锁的样子（全量跑时偶发过一次，单跑必过）。
+    # 所以 env 与 argv 都在父进程里算好，子进程分支里只剩一句 execve。
+    env = {**os.environ, "HOME": str(home), "TERM": "xterm-256color"}
+    argv = [sys.executable, "-c", DRIVER.format(root=ROOT, book=str(book))]
+    cwd = str(cwd) if cwd else None
     pid, fd = pty.fork()
     if pid == 0:
-        os.environ["HOME"] = str(home)
-        os.environ["TERM"] = "xterm-256color"
-        os.execve(sys.executable,
-                  [sys.executable, "-c", DRIVER.format(root=ROOT, book=str(book))],
-                  os.environ)
+        if cwd:
+            os.chdir(cwd)                  # 只有一次 syscall，不分配
+        os.execve(sys.executable, argv, env)
 
     # pty.fork 默认 0x0，`term.cols` 会退到下限 48；设成真实宽度才测到常用路径。
     fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", 40, cols, 0, 0))
@@ -215,3 +223,86 @@ def test_app_resumes_from_saved_offset(synth_epub, tmp_path):
     assert os.WEXITSTATUS(st2) == 0, out2[-2000:]
     # 没动就退出 → 偏移不变；变了说明启动时没读存档（会回到书的开头）。
     assert json.loads(prog.read_text())[key]["offset"] == off
+
+
+TTS_SERVER = r"""
+import sys
+from http.server import BaseHTTPRequestHandler, HTTPServer
+class H(BaseHTTPRequestHandler):
+    def do_POST(self):
+        self.rfile.read(int(self.headers.get("Content-Length") or 0))
+        self.send_response(200); self.end_headers()
+        self.wfile.write(b"RIFF" + b"\0" * 64)
+    def log_message(self, *a): pass
+s = HTTPServer(("127.0.0.1", int(sys.argv[1])), H)
+s.serve_forever()
+"""
+
+
+@contextlib.contextmanager
+def mute_tts(work):
+    """在 `work/tts.json` 里配一个指向本地 server 的 http 后端。
+
+    真跑 `say`/`edge` 会出声、会联网、会让这条测试慢一个数量级 —— 但**后端不能 stub 掉**：
+    被测进程是真 `os.execve` 起的，monkeypatch 到不了。所以走 `http` 后端指到 127.0.0.1，
+    顺带把「项目内 tts.json 选后端」这条路径也一起端到端验证了。返回的是假音频字节，
+    `afplay` 立刻失败（stderr 已 DEVNULL）→ 不出声。
+
+    **写进 `work/` 而不是仓库根。** `tts.config_path()` 优先找 `./tts.json`，被测进程的
+    CWD 必须是隔离目录，否则会读到本仓库自己的那份配置（后端是 edge → 真联网出声）。
+
+    **server 必须起在子进程而不是线程里。** `run_app` 用 `pty.fork()`，fork 一个多线程
+    进程时子进程可能拿到别的线程持着的 malloc 锁 → 死锁（Python 3.13 为此发警告）。
+    """
+    with socket.socket() as probe:                 # 借一个空闲端口再让开
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+    srv = subprocess.Popen([sys.executable, "-c", TTS_SERVER, str(port)],
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        for _ in range(100):                       # 等它真的开始监听
+            with contextlib.suppress(OSError), socket.create_connection(
+                    ("127.0.0.1", port), timeout=0.2):
+                break
+            time.sleep(0.05)
+        (work / "tts.json").write_text(json.dumps({"backend": "http", "http": {
+            "url": f"http://127.0.0.1:{port}/speak", "audio": "wav"}}))
+        yield
+    finally:
+        srv.terminate()
+        with contextlib.suppress(subprocess.TimeoutExpired):
+            srv.wait(timeout=3)
+
+
+def test_app_with_tts_enabled_survives_the_whole_walk(synth_epub, tmp_path):
+    """**开着朗读走一遍主循环。** 单元测试覆盖了 Engine，但这些才是只有真跑才验证到的：
+
+      - `v` 键的开关行文（`[tts] ...`）确实打出来，而且没有 Traceback；
+      - 五处 `voice.stop()` 联动（目录、打字、老板键、关闭、finally）不会卡住主循环 ——
+        `stop()` 里持锁 + terminate 子进程，写错了表现是退出时挂死而不是报错；
+      - 退出时把 `tts`/`voice` 存进了 progress.json，下次启动才接得上；
+      - 朗读线程是 daemon —— 不是的话进程退不出去，这条测试会超时被 SIGKILL。
+    """
+    home = tmp_path / "home"
+    home.mkdir()
+    work = tmp_path / "work"
+    work.mkdir()
+    with mute_tts(work):
+        keys = [
+            (b"v", 0.6),                  # 开朗读
+            (b"n", 0.6), (b"n", 0.6),     # 翻两段：抢占 + 预取都走到
+            (b"c", 0.5), (b"\r", 0.4),    # 目录（stop 联动），回车不跳转
+            (b"t", 0.6), (b"\x1b", 0.5),  # 打字模式（按行朗读）再放弃
+            (b"\x1b", 0.5), (b"\x0c", 0.5),   # 老板键 → 必须静音 → Ctrl-L 回来
+            (b"q", 0.8),
+        ]
+        out, status = run_app(synth_epub, keys, home, cwd=work)
+
+    assert "Traceback" not in out, out[-3000:]
+    assert os.WIFEXITED(status) and os.WEXITSTATUS(status) == 0, out[-2500:]
+    assert "[tts] http" in out                    # 开关行、且选中的是项目内 tts.json 的后端
+    assert "%)" in out and "min" in out           # finally 走完了，没在 stop 里挂死
+
+    rec = json.loads((home / ".local/share/noveltyper/progress.json").read_text())
+    key = next(k for k in rec if k != "_v")
+    assert rec[key]["tts"] is True and rec[key]["voice"] == "http"

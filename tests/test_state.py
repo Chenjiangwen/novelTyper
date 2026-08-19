@@ -28,8 +28,28 @@ def test_offset_clamped_to_text():
 
 
 def test_missing_record_defaults():
+    """新书要拿到一整套默认值 —— 主循环直接下标取，缺一个键就是 KeyError。
+
+    断言逐键而不是整字典相等：加一个可持久化的偏好（tts / voice 就是这么来的）不该
+    让这条测试失败，它要钉的是「默认值对不对」，不是「有几个键」。
+    """
     rec = state.record({}, FakeBook())
-    assert rec == {"offset": 0, "typed": 0, "wpm": 0.0}
+    assert rec["offset"] == 0 and rec["typed"] == 0 and rec["wpm"] == 0.0
+    assert rec["tts"] is False and rec["voice"] == ""
+
+
+def test_tts_prefs_round_trip():
+    """朗读开关和后端要跟着书存 —— 一本书听读、另一本默读是常态。"""
+    st = state.update({}, FakeBook(), 100, 0, 0.0, "git", tts=True, voice="edge")
+    assert state.record(st, FakeBook())["tts"] is True
+    assert state.record(st, FakeBook())["voice"] == "edge"
+
+
+def test_update_leaves_tts_alone_when_not_passed():
+    """不传就不动 —— 老调用方（和 v1 存档迁移路径）不该被顺手清掉偏好。"""
+    st = state.update({}, FakeBook(), 100, 0, 0.0, "git", tts=True, voice="edge")
+    st = state.update(st, FakeBook(), 200, 0, 0.0, "git")
+    assert st[FakeBook.key]["tts"] is True and st[FakeBook.key]["voice"] == "edge"
 
 
 def test_update_drops_seg():

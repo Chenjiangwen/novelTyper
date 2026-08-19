@@ -55,15 +55,22 @@ def record(st, book):
     rec.setdefault("offset", 0)
     rec.setdefault("typed", 0)
     rec.setdefault("wpm", 0.0)
+    rec.setdefault("tts", False)
+    rec.setdefault("voice", "")
     rec["offset"] = max(0, min(int(rec["offset"]), max(len(book.text) - 1, 0)))
     return rec
 
 
-def update(st, book, offset, typed, wpm, theme):
+def update(st, book, offset, typed, wpm, theme, tts=None, voice=None):
+    """写回一本书的记录。`tts`/`voice` 传 None 表示不改 —— 老调用方不必跟着变。"""
     st["_v"] = VERSION
     rec = dict(st.get(book.key) or {})
     rec.update(offset=int(offset), typed=int(typed), wpm=round(float(wpm), 1),
                theme=theme)
+    if tts is not None:
+        rec["tts"] = bool(tts)
+    if voice is not None:
+        rec["voice"] = str(voice)
     rec.pop("seg", None)                       # 迁移完成，别留两个真相来源
     st[book.key] = rec
     return st

@@ -1,0 +1,23 @@
+{
+  "backend": "edge",
+
+  "edge": {
+    "voice": "en-US-AriaNeural",
+    "rate": "-10%",
+    "volume": "+0%",
+    "pitch": "+0Hz"
+  },
+
+  "say": {
+    "voice": "Samantha",
+    "rate": 180
+  },
+
+  "http": {
+    "url": "https://api.example.com/v1/audio/speech",
+    "headers": { "Authorization": "Bearer ${TTS_KEY}" },
+    "body": { "model": "tts-1", "input": "${TEXT}", "voice": "${VOICE}" },
+    "voice": "alloy",
+    "audio": "mp3"
+  }
+}

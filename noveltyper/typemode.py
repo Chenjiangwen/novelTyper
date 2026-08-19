@@ -22,6 +22,7 @@ from .themes import DIM, GRN, RED, OFF
 
 ABORT = ("\x03", "\x1b")          # Ctrl-C / Esc 放弃本段
 BACKSPACE = ("\x7f", "\b")
+REPLAY = "\x12"                   # Ctrl-R 重听当前行（听打时最需要的一个键）
 
 
 def typeable(ch):
@@ -52,8 +53,11 @@ def _frame(target, pos, bad):
     return done + head + rest
 
 
-def run(read_key, lines, target_path, ps1):
+def run(read_key, lines, target_path, ps1, say=None):
     """打完 lines 里的每一行。read_key 由调用方注入（term.read_key），便于测试。
+
+    `say(text)` 可选，给一行就朗读一行 —— 听打练习。**按行而不是按整段朗读**：整段读完
+    要十几秒，人早打到第三行了，声音和光标对不上就成了干扰而不是提示。Ctrl-R 重听当前行。
 
     返回 (wpm, accuracy) 或 None（中途放弃）。计时从第一次有效击键开始 —— 否则「看完
     这段再动手」的思考时间会算进速度里。
@@ -63,6 +67,8 @@ def run(read_key, lines, target_path, ps1):
     t0 = None
     for target in lines:
         pos, bad = _skip(target, 0), False
+        if say:
+            say(target)
         while pos < len(target):
             sys.stdout.write(f"\r\033[Kheredoc> {_frame(target, pos, bad)}")
             back = len(target) - pos
@@ -75,6 +81,10 @@ def run(read_key, lines, target_path, ps1):
             if k in ABORT:
                 sys.stdout.write("\r\033[K")
                 return None
+            if k == REPLAY:                    # 重听：不算击键，不动游标
+                if say:
+                    say(target)
+                continue
             if k in BACKSPACE:                 # 退格只用来回看，不改计数
                 pos, bad = max(pos - 1, 0), False
                 continue

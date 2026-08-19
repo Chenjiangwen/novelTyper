@@ -4,7 +4,7 @@
 
 [![Python](https://img.shields.io/badge/python-3.9%2B-blue.svg)](https://www.python.org/)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-106%20passed-brightgreen.svg)](#开发)
+[![Tests](https://img.shields.io/badge/tests-136%20passed-brightgreen.svg)](#开发)
 
 novelTyper 把 epub 小说渲染成 `git log -p`、`pytest`、`go test`、`ripgrep` 的输出形态，
 一次按键推进一段正文。它不接管屏幕，而是内联进你当前的终端会话：复用机器上真实的 PS1，
@@ -42,6 +42,7 @@ index 3e9c06e..911c48a 100644
   - [按键](#按键)
   - [主题](#主题)
   - [打字模式](#打字模式)
+  - [朗读](#朗读)
   - [老板键](#老板键)
 - [进度存档](#进度存档)
 - [工作原理](#工作原理)
@@ -54,10 +55,13 @@ index 3e9c06e..911c48a 100644
   按真实行为写死（40 位 sha、对得上扩展名的注释符、从段序号线性导出的耗时）。
 - **不接管屏幕** —— 内联进当前会话，一次按键出一段，滚回去还能看到你真正的命令历史。
 - **打字练习** —— 任意段落按 `t` 进入，逐字符比对，统计净 wpm 与准确率。
+- **朗读** —— `v` 开关，默认微软 Edge 语音，也可用 macOS 内置 `say` 或自定义 HTTP
+  endpoint；打字模式按行朗读，Ctrl-R 重听。
 - **老板键** —— Esc 单击切到 `tsc --watch --noEmit` 的等待屏，`Ctrl-L` 恢复。
 - **多书书架** —— epub 丢进目录即可，进度按书独立记录。
 - **章节目录** —— 从 `toc.ncx` 解析，按序号跳转。
-- **零配置** —— 唯一依赖是 `lxml`，无配置文件、无缓存、无索引。
+- **开箱即用** —— 唯一依赖是 `lxml`，无索引、无需初始化。朗读是唯一带配置文件的功能，
+  不配也能用（自动挑可用后端），配置文件在项目内（`./tts.json`，抄 `tts.example.json`）。
 
 ## 安装
 
@@ -123,6 +127,7 @@ corpus-verify ~/x.epub     # 存在的路径直接使用
 | `s` | 切换主题 |
 | `c` | 章节目录，输入序号 + 回车跳转 |
 | `t` | 对当前段进入打字模式 |
+| `v` | 切换朗读 |
 | `Esc` | 老板键 |
 | `Ctrl-L` | 从老板键恢复 |
 | `q` / `Ctrl-D` | 退出并存档 |
@@ -159,6 +164,80 @@ Ctrl-C 放弃本段。
 
 键盘敲不出来的字符自动跳过，不计击键也不计错。
 
+开着朗读时，每进入一行念一次这一行 —— **不是按整段**。整段读完要十几秒，人早打到第三行
+了，声音和光标对不上就成了干扰。`Ctrl-R` 重听当前行，不计击键、不动游标（听不清多按两下
+不该把准确率打下去）。
+
+### 朗读
+
+`v` 键开关，选择随进度存档，下次启动沿用。三个后端，默认取第一个可用的：
+
+| 后端 | 说明 |
+|---|---|
+| `edge` | 微软 Edge 在线语音，质量最好。`pip install edge-tts` |
+| `say` | macOS 内置，离线、零依赖 |
+| `http` | 自定义 endpoint，配置驱动，响应体直接当音频字节 |
+
+不配置也能用 —— 上表按顺序挑第一个可用的。要指定后端或换嗓音才需要写配置文件，两个位置
+按优先级查找，与书架同一套约定：
+
+| 位置 | 用途 |
+|---|---|
+| `./tts.json` | 项目内配置，优先（相对 CWD） |
+| `~/.config/noveltyper/tts.json` | 全局配置 |
+
+仓库里有 `tts.example.json` 可以直接抄：
+
+```bash
+cp tts.example.json tts.json
+```
+
+`tts.json` 在 `.gitignore` 里 —— 它会长出 endpoint 和密钥，而仓库是公开的（同
+`novel_data/` 的理由）。
+
+```json
+{
+  "backend": "edge",
+  "edge": { "voice": "en-US-AriaNeural", "rate": "-10%" },
+  "say": { "voice": "Samantha", "rate": 180 }
+}
+```
+
+顶层 `backend` 是显式指定；**不写就走自动探测**，装了 edge-tts 的机器永远选到 `edge`，
+下面的自定义 endpoint 不会生效。三个后端的配置可以同时写在文件里，只有 `backend` 指向
+的那个生效，切后端只改顶层一行。
+
+`edge` 段的四个键会被拼成 `edge-tts` 的命令行参数，格式跟着它自己的约定：`rate` /
+`volume` 是百分比字符串（`"-10%"`、`"+20%"`），`pitch` 是赫兹（`"+0Hz"`、`"-50Hz"`）。
+可用嗓音：`edge-tts --list-voices | grep en-US`。
+
+自定义 endpoint 覆盖 OpenAI 兼容接口、Azure、本地 Piper —— `url` / `headers` / `body`
+三处都做占位替换，`${TEXT}` 是待朗读文本，`${VOICE}` 取同级的 `voice`，其余 `${NAME}`
+从环境变量取：
+
+```json
+{
+  "backend": "http",
+  "http": {
+    "url": "https://api.example.com/v1/audio/speech",
+    "headers": { "Authorization": "Bearer ${TTS_KEY}" },
+    "body": { "model": "tts-1", "input": "${TEXT}", "voice": "${VOICE}" },
+    "voice": "alloy",
+    "audio": "mp3"
+  }
+}
+```
+
+**密钥只从环境变量取，配置文件里只写 `${TTS_KEY}` 这样的占位符。** 配置文件会被备份、
+被同步、被误提交 —— 同「进度存档不写明文正文」是一条理由。没设的变量替成空串，不会把
+`${TTS_KEY}` 原样发出去当明文密钥。
+
+音频缓存在 `~/.local/share/noveltyper/tts/`，键含后端与嗓音（改了 `voice`/`rate` 自动
+失效，不用手动清），按 mtime 淘汰到 400 个文件。后端挂了（网络抽一下、endpoint 500）
+不抛异常，静音继续读。
+
+播放器按 `afplay` / `ffplay` / `mpv` / `paplay` / `aplay` 取第一个可用的。
+
 ### 老板键
 
 Esc 单击切到 `tsc --watch --noEmit` 的等待屏 —— watch 语义天然解释了「这个终端为什么
@@ -169,22 +248,24 @@ Esc 单击切到 `tsc --watch --noEmit` 的等待屏 —— watch 语义天然�
 ## 进度存档
 
 原子写入 `~/.local/share/noveltyper/progress.json`，**按书名（epub 文件名）分条**，每条
-记 `offset / typed / wpm / theme`：
+记 `offset / typed / wpm / theme / tts / voice`：
 
 ```json
 {
   "_v": 2,
   "The Three-Body Problem (Cixin Liu).epub": {
-    "offset": 34095, "typed": 0, "wpm": 0.0, "theme": "git"
+    "offset": 34095, "typed": 0, "wpm": 0.0, "theme": "git",
+    "tts": false, "voice": "edge"
   },
   "Ball Lightning (Liu Cixin).epub": {
-    "offset": 3275, "typed": 2, "wpm": 19.3, "theme": "git"
+    "offset": 3275, "typed": 2, "wpm": 19.3, "theme": "git",
+    "tts": true, "voice": "say"
   }
 }
 ```
 
-几本书轮着读，各自的位置、打字次数、最佳 wpm 和主题互不影响。存档里**不写明文正文**
-—— 它躺在 `~/.local/share` 里，谁都可能看到。
+几本书轮着读，各自的位置、打字次数、最佳 wpm、主题和嗓音互不影响 —— 一本听 edge、另一本
+听本地 `say` 是常态。存档里**不写明文正文** —— 它躺在 `~/.local/share` 里，谁都可能看到。
 
 ## 工作原理
 
@@ -195,6 +276,7 @@ noveltyper/
 ├── segments.py    段落合并成阅读单元
 ├── themes.py      四套伪装渲染器
 ├── typemode.py    打字模式
+├── tts.py         朗读：可插拔后端、磁盘缓存、世代号抢占（配置见 tts.example.json）
 ├── panic.py       老板键
 ├── toc.py         章节目录
 ├── state.py       进度存档（原子写、v1 迁移）
@@ -231,11 +313,17 @@ blockquote / 7 个 p，只取 `<p>` 会整章丢失）；小于 1500 字节的 s
 2822 个原始段落里 24.9% 短于 80 字符，最长有 25 段对白连击 —— 不合并的话半屏推进会退化
 成一行一按。
 
+**抢占用世代号，不能用标志位。** 连按三次 `n`，前两次的合成线程可能还卡在网络里；它们
+醒来后必须发现自己已经过期、不去播放。一个共用的 bool 只能表达「要不要停」，表达不了
+「谁该停」—— 第三次 `speak` 刚起的线程会被第一次的 `stop` 误杀，表现成「翻页后没声音」。
+合成也必须在后台线程：主循环阻塞在 `read_key`，一次网络合成 200-800ms，放在按键路径上
+「按 n 翻页」就变成「按 n 卡一下再翻页」。
+
 ## 开发
 
 ```bash
 pip install -e .
-python3 -m pytest          # 106 个测试
+python3 -m pytest          # 136 个测试
 ```
 
 `tests/test_app.py` 和 `tests/test_term.py` 在真 pty 里跑，改动前先看模块 docstring ——
@@ -252,8 +340,16 @@ python3 -m pytest          # 106 个测试
 - **`pty.fork` 默认窗口 0x0**，要 `TIOCSWINSZ` 设真实宽度，不然 `term.cols` 退到下限 48。
 - **主题超宽要扫一批 offset** —— 超宽来自 offset 派生的数字和选中的符号名长度，单个
   offset 测不出来。
+- **fork 之后到 execve 之间不做任何 Python 层分配**。全量跑时 pytest 进程里有别的线程
+  （TTS stub server、朗读的 daemon 线程），`pty.fork` 一个多线程进程时子进程可能拿到别的
+  线程持着的 malloc 锁 → 卡死在 fork 与 execve 之间，被 deadline 打死，表现成「进度文件
+  没写出来」这种完全不像死锁的样子（全量跑偶发，单跑必过）。同理，TTS 的 stub server 要
+  起在子进程而不是线程里。
+- **TTS 后端不能 stub 掉** —— 被测进程是真 `os.execve` 起的，monkeypatch 到不了。走
+  `http` 后端指向 127.0.0.1 的本地 server，顺带把「配置文件选后端」也端到端验证了。
 
-`novel_data/` 在 `.gitignore` 里：epub 是版权内容，仓库是公开的。
+`novel_data/` 和 `tts.json` 都在 `.gitignore` 里：epub 是版权内容，配置文件会长出 endpoint
+和密钥，而仓库是公开的。`tts.example.json` 是提交进来的模板。
 
 ## FAQ
 
@@ -261,6 +357,17 @@ python3 -m pytest          # 106 个测试
 早期版本的 bug，已修复。epub 用软连字符（U+00AD）标断行候选点，它渲染出来零宽、屏幕上
 完全看不见，而打字模式严格前进 —— 光标停在这个不可见字符上，敲下一个看得见的字符不匹配，
 游标就不动。现在解析期直接删掉零宽字符，打字期按值域跳过所有敲不出的字符。
+
+**按了 `v` 但没声音？**
+按下后会打出一行选中的后端（`[tts] edge`，关掉时是 `[tts] edge (off)`）。显示 `none`
+说明一个后端都不可用 —— 装 `edge-tts`，或配一个 `http` endpoint。有后端名但仍然没声音，
+通常是没有播放器（Linux 上装 `mpv` 或 `ffmpeg`），或者 endpoint 报错了；合成失败不抛异常，
+只静音继续，错误跟在同一行后面。
+
+**改了 `tts.json` 但没生效？**
+`./tts.json` 是相对当前工作目录的（和 `novel_data/` 一样）—— 从别的目录起就只剩全局那份
+`~/.config/noveltyper/tts.json`。另一种可能是没写顶层 `"backend"`：那样走自动探测，装了
+edge-tts 就永远选 `edge`。`[tts] ...` 那行会打出实际选中的后端。
 
 **支持中文小说吗？**
 阅读可以，但打字模式不支持（一次单字节读取只能匹配 ASCII），且正文归一化是按英文排版

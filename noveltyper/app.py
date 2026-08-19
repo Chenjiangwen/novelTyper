@@ -12,7 +12,7 @@ import time
 from pathlib import Path
 
 from . import book as bookmod
-from . import panic, segments, state, term, themes, toc, typemode
+from . import panic, segments, state, term, themes, toc, tts, typemode
 from .themes import DIM, OFF
 
 NEXT = ("\r", "\n", "n", " ", "j")
@@ -75,6 +75,7 @@ def main(argv=None):
     i = segments.index_at(units, rec["offset"])
     typed, best = rec["typed"], rec["wpm"]
     theme = themes.get(rec.get("theme", ""))
+    voice = tts.Engine(enabled=bool(rec.get("tts")), backend=rec.get("voice", ""))
 
     ps1 = term.real_prompt()
     # 标题也是穿帮面：写成一条正在跑的命令，标签页上就看不出在读小说。
@@ -95,7 +96,12 @@ def main(argv=None):
             while True:
                 cols = term.cols()
                 if pending:
-                    print(themes.render(theme, ctx(cols)))
+                    c = ctx(cols)
+                    print(themes.render(theme, c))
+                    voice.speak(c.text)
+                    if i + 1 < len(units):        # 预取下一段：翻页时不等合成
+                        nxt = units[i + 1]
+                        voice.prefetch(bk.text[nxt[0]:nxt[1]])
                     pending = False
                 sys.stdout.write(ps1)
                 sys.stdout.flush()
@@ -112,24 +118,36 @@ def main(argv=None):
                 elif k == "s":
                     theme = themes.get(themes.next_key(theme.key))
                     pending = True            # 换主题要重新折行，必须整段重渲染
+                elif k == "v":
+                    voice.enabled = not voice.enabled
+                    voice.stop()              # 关掉时当前这句也要停，不能读完
+                    if voice.enabled:
+                        voice.speak(ctx(cols).text)
+                    print(f"{DIM}[tts] {voice.label()}"
+                          + (f" · {voice.err}" if voice.err else "") + OFF)
                 elif k == "c":
+                    voice.stop()              # 目录页占屏，读着上一段就错位了
                     toc.show(theme, bk, units[i][0], cols, ps1)
                     n = toc.ask(term.read_key, ps1, len(bk.chapters))
                     if n is not None:
                         i, pending = segments.index_at(units, bk.chapters[n][0]), True
                     print()
                 elif k == "t":
+                    voice.stop()              # 朗读整段与逐行听打冲突
                     c = ctx(cols)
                     lines = themes.wrap(c.text, cols - 10)
                     r = typemode.run(lambda: term.read_key(fd), lines,
-                                     theme.typing_target(c), ps1)
+                                     theme.typing_target(c), ps1,
+                                     say=voice.speak if voice.enabled else None)
                     if r:
                         typed += 1
                         best = max(best, r[0])
+                    voice.stop()
                     print()
                 elif k == term.ESC:
                     # 单击就进 —— 紧张时多按一次就是多一次失败机会。误触的代价只是屏幕
                     # 跳到构建输出，Ctrl-L 就回来了。方向键在上面已经被吞掉了。
+                    voice.stop()              # 老板键必须同时静音，屏幕切了声音还在念就白切
                     panic.enter(lambda: term.read_key(fd), ps1)
                     print()
                 elif k.isprintable():
@@ -137,8 +155,10 @@ def main(argv=None):
     except (KeyboardInterrupt, EOFError):
         pass
     finally:
+        voice.stop()
         off = units[i][0]
-        state.save(state.update(st, bk, off, typed, best, theme.key))
+        state.save(state.update(st, bk, off, typed, best, theme.key,
+                                tts=voice.enabled, voice=voice.backend))
         ch = bk.chapter_at(off)
         print(f"{DIM}{i + 1}/{len(units)} ({(i + 1) / len(units) * 100:.1f}%)"
               + (f" · {ch[2][:36]}" if ch else "")
