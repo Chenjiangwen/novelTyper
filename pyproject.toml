@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "noveltyper"
+version = "0.2.0"
+description = "Read English novels and practice typing, disguised as terminal build output"
+requires-python = ">=3.9"
+license = "MIT"
+license-files = ["LICENSE"]
+dependencies = ["lxml>=4.9"]
+
+[project.scripts]
+# 命令名故意不叫 noveltyper —— `ps aux` / 补全历史都是穿帮面。
+corpus-verify = "noveltyper.app:main"
+
+[tool.setuptools]
+packages = ["noveltyper"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
