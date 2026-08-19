@@ -60,6 +60,33 @@ def test_unreachable_chars_skipped(capsys):
     assert r is not None and r[1] == 100.0
 
 
+def test_skip_covers_every_non_ascii_char_not_just_a_whitelist():
+    """**跳过判据必须是值域而不是白名单。**
+
+    `read_key` 一次 `os.read` 只取一个字节，永远只返回 ASCII，所以任何 ord>126 的字符
+    都匹配不上、停在它上面就是死锁。原实现用手写字符表 `SAFE`，漏掉的字符成了看不见的
+    路障 —— 实测 Ball Lightning 有 7438 个软连字符（零宽，屏幕上看不出异常），敲什么都
+    不前进。这条钉住那次回归：抽样覆盖软连字符、零宽空格、汉字、西里尔、带调符拉丁。
+    """
+    for ch in "­​ìīāǎÉ½刘白е©§":
+        assert not typemode.typeable(ch), repr(ch)
+        assert typemode._skip(f"a{ch}b", 1) == 2, repr(ch)
+    # 控制字符同样是死锁：主循环把 ord<32 当控制键忽略，不跳过就永远等不到匹配。
+    for ch in "\t\n\r\x00\x1f":
+        assert not typemode.typeable(ch), repr(ch)
+        assert typemode._skip(f"a{ch}b", 1) == 2, repr(ch)
+    for ch in "azAZ09 .,'\"-!?":
+        assert typemode.typeable(ch), repr(ch)
+
+
+def test_soft_hyphen_mid_word_does_not_stall(capsys):
+    """用户实际卡住的那一句：`the ­whole` 之间夹一个软连字符，按 w 没反应。"""
+    target = "as if the ­whole universe"
+    typed = [c for c in target if typemode.typeable(c)]
+    r = typemode.run(feeder(typed), [target], "x.txt", "$ ")
+    assert r is not None and r[1] == 100.0
+
+
 def test_backspace_rewinds_without_penalty(capsys):
     target = "ab"
     r = typemode.run(feeder(["a", "\x7f", "a", "b"]), [target], "x.txt", "$ ")

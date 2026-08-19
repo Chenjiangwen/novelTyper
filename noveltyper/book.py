@@ -21,13 +21,19 @@ from lxml import etree, html as lhtml
 MIN_BLOCK = 20      # 短于此的 <p> 是页眉/页码/装饰符
 MIN_FILE = 1500     # 小于此字节的 spine item 视为非正文页
 
+# **排版用的不可见字符必须删掉，不能留。** epub 里软连字符（U+00AD，只在断行处才显示为
+# 连字符）铺得极密 —— Ball Lightning 一本就有 7438 个。留着的话它渲染出来零宽、屏幕上
+# 什么都看不见，但打字模式的光标会停在它上面：你敲下一个看得见的字符不匹配，游标不动
+# （严格前进），表现就是"这本书打到某个词就卡死"。同理清掉零宽空格等其它零宽字符。
+_DROP = {ord(c): None for c in "­​‌‍⁠﻿"}
+
 _TR = str.maketrans({"’": "'", "‘": "'", "“": '"', "”": '"',
                      " ": " ", "–": "-"})
 
 
 def norm(s):
     """一级归一化 + 二级展开，覆盖实测非 ASCII 字符的 95% —— 打字模式才敲得出来。"""
-    return s.translate(_TR).replace("—", "--").replace("…", "...")
+    return s.translate(_DROP).translate(_TR).replace("—", "--").replace("…", "...")
 
 
 @dataclass

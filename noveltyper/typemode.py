@@ -9,23 +9,34 @@
 3. **ghost 宽度恒定** —— 每帧都渲染完整的 `target`，只切前后两段的颜色。老实现从左侧裁
    `rest`，行宽随输入变化，光标和折行都会漂。
 
-无法输入的字符（`SAFE`：变音符号、版权号等）到了就自动跳过 —— 键盘敲不出来的东西不该
-成为路障，也不该记成错误。
+**敲不出来的字符必须跳过，判据是结构性的而不是白名单。** `term.read_key` 一次 `os.read`
+只取一个字节，所以它永远只能返回 ASCII —— 任何 `ord > 126` 的字符都不可能被匹配上，停在
+它上面就是死锁。原实现用一张手写的 `SAFE` 字符表，漏掉的字符（实测 Ball Lightning 有
+7438 个软连字符、Death's End 有 38 个汉字）就成了路障：屏幕上看不出异常，敲什么都不前进。
+现在按 `ord > 126` 一律跳过 —— 白名单会漏，值域判据不会。
 """
 import sys
 import time
 
 from .themes import DIM, GRN, RED, OFF
 
-# 键盘（美式布局）敲不出来的字符：到了就自动跳过，不计击键也不计错。
-SAFE = set("ÜàéíïöüÄäÖö©®±°×÷£€¥§¶†‡")
 ABORT = ("\x03", "\x1b")          # Ctrl-C / Esc 放弃本段
 BACKSPACE = ("\x7f", "\b")
 
 
+def typeable(ch):
+    """能否由一次单字节 read 产出、且不会被下面的控制键过滤挡掉。
+
+    上界 126：`read_key` 一次 `os.read` 只取一个字节，非 ASCII 永远匹配不上。
+    下界 32：主循环把 `ord < 32` 当控制键忽略（Enter/Tab 不该算击键），所以正文里真出现
+    控制字符时同样是死锁。两头都卡住才是完整判据 —— 见模块 docstring。
+    """
+    return 32 <= ord(ch) <= 126
+
+
 def _skip(target, pos):
     """从 pos 起跳过所有敲不出来的字符，返回新的 pos。"""
-    while pos < len(target) and target[pos] in SAFE:
+    while pos < len(target) and not typeable(target[pos]):
         pos += 1
     return pos
 

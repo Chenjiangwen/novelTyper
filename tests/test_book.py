@@ -65,6 +65,18 @@ def test_norm_ascii_only():
     assert s == '"He said--\'tis fine..." he knew-yes'
 
 
+def test_norm_drops_invisible_typography_chars():
+    """**零宽字符必须在解析期删掉，不能留到打字模式。**
+
+    epub 用软连字符（U+00AD）标断行候选点，实测 Ball Lightning 一本有 7438 个。它渲染
+    出来零宽，屏幕上完全看不出异常，但打字模式的光标会停在上面 —— 敲下一个看得见的字符
+    不匹配，游标不动（严格前进），表现成"这本书打到某个词就卡死"。
+    """
+    assert book.norm("as if the ­whole") == "as if the whole"
+    for cp in (0x00AD, 0x200B, 0x200C, 0x200D, 0x2060, 0xFEFF):
+        assert book.norm(f"a{chr(cp)}b") == "ab", hex(cp)
+
+
 def test_real_book_invariants(real_book):
     b = real_book
     assert len(b.blocks) > 1000 and len(b.chapters) > 10
