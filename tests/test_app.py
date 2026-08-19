@@ -25,7 +25,9 @@ import threading
 import time
 from pathlib import Path
 
-from noveltyper import term
+import pytest
+
+from noveltyper import app, term
 
 ROOT = str(Path(term.__file__).resolve().parents[1])
 
@@ -92,6 +94,53 @@ def run_app(book, keys, home, settle=2.0, deadline=25.0, cols=100):
         os.close(fd)
         t.join(timeout=2.0)
     return b"".join(chunks).decode(errors="replace"), status
+
+
+def shelf(tmp_path, monkeypatch, *names):
+    """在隔离的 CWD/HOME 下摆一个书架，返回 novel_data 目录。"""
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.chdir(tmp_path)
+    d = tmp_path / "novel_data"
+    d.mkdir()
+    for n in names:
+        (d / n).write_bytes(b"PK\x03\x04")       # 只测定位，不解析
+    return d
+
+
+def test_find_book_matches_by_substring(tmp_path, monkeypatch):
+    """**书名要能用子串指定** —— 命令行参数会留在 `.zsh_history` 里，是穿帮面。
+
+    `corpus-verify dark` 看着像个构建目标；`corpus-verify "The Dark Forest (Cixin
+    Liu).epub"` 一行就把伪装拆了。大小写不敏感，因为敲的时候不会去核对原文件名。
+    """
+    shelf(tmp_path, monkeypatch, "Ball Lightning.epub", "The Dark Forest.epub")
+    assert app.find_book(["dark"]).endswith("The Dark Forest.epub")
+    assert app.find_book(["DARK"]).endswith("The Dark Forest.epub")
+    assert app.find_book(["ball"]).endswith("Ball Lightning.epub")
+
+
+def test_find_book_ambiguous_exits_instead_of_guessing(tmp_path, monkeypatch):
+    """匹配到多本时报候选并退出。**猜一本是最坏的行为** —— 打开的不是想读的那本，
+    进度会记到另一本书名下，等发现时两边的偏移都已经脏了。"""
+    shelf(tmp_path, monkeypatch, "Death's End.epub", "The Dark Forest.epub")
+    with pytest.raises(SystemExit) as e:
+        app.find_book(["e"])                     # 两本都含 e
+    assert "ambiguous" in str(e.value)
+
+
+def test_find_book_prefers_explicit_path_over_matching(tmp_path, monkeypatch):
+    """存在的路径直接用，不走匹配 —— 书架外的文件也得能读。"""
+    shelf(tmp_path, monkeypatch, "Ball Lightning.epub")
+    other = tmp_path / "elsewhere.epub"
+    other.write_bytes(b"PK\x03\x04")
+    assert app.find_book([str(other)]) == str(other)
+    assert app.find_book([]).endswith("Ball Lightning.epub")
+
+
+def test_find_book_no_match_falls_through_to_usage(tmp_path, monkeypatch):
+    """没匹配上要返回 None（调用方打 usage），不能静默开第一本。"""
+    shelf(tmp_path, monkeypatch, "Ball Lightning.epub")
+    assert app.find_book(["nonexistent"]) is None
 
 
 def test_app_full_keyboard_walk(synth_epub, tmp_path):

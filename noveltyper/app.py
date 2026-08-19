@@ -20,13 +20,33 @@ PREV = ("p", "k")
 QUIT = ("q", "\x04")
 
 
-def find_book(argv):
-    if argv:
-        return argv[0]
+def books():
+    """所有能读的 epub，按目录优先级 + 文件名排序。"""
+    out = []
     for d in (Path("novel_data"), Path.home() / ".local/share/noveltyper/books"):
-        hits = sorted(d.glob("*.epub")) if d.is_dir() else []
-        if hits:
-            return str(hits[0])
+        if d.is_dir():
+            out += sorted(d.glob("*.epub"))
+    return out
+
+
+def find_book(argv):
+    """定位 epub。参数可以是路径，也可以是书名的一部分（大小写不敏感）。
+
+    书架上放几本是常态，但**命令行参数是穿帮面** —— `.zsh_history` 里留一行
+    `corpus-verify "The Dark Forest (Cixin Liu).epub"` 就白干了。所以支持子串匹配：
+    `corpus-verify dark` 既短又不像书名。匹配到多本时列出候选让人再缩一次，不猜。
+    """
+    pool = books()
+    if not argv:
+        return str(pool[0]) if pool else None
+    if Path(argv[0]).exists():
+        return argv[0]
+    q = argv[0].lower()
+    hits = [b for b in pool if q in b.name.lower()]
+    if len(hits) == 1:
+        return str(hits[0])
+    if hits:
+        sys.exit("ambiguous: " + ", ".join(b.stem[:34] for b in hits))
     return None
 
 
